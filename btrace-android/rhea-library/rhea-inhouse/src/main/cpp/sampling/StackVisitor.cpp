@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include "StackVisitor.h"
+#include "../utils/log.h"
 #include "../utils/npth_dl.h"
 
 #include <string>
@@ -27,6 +28,7 @@ static constexpr const char* STACK_VISITOR_DTOR = "_ZN3art12StackVisitorD2Ev";
 static constexpr const char* CONTEXT_CREATE = "_ZN3art7Context6CreateEv";
 static constexpr const char* STACK_VISITOR_GET_METHOD = "_ZNK3art12StackVisitor9GetMethodEv";
 static constexpr const char* STACK_VISITOR_WALK_STACK = "_ZN3art12StackVisitor9WalkStackILNS0_16CountTransitionsE0EEEvb";
+static constexpr const char* STACK_VISITOR_WALK_STACK_ANDROID_12 = "_ZN3art12StackVisitor9WalkStackILNS0_16CountTransitionsE0ELb0EEEvb";
 
 bool StackVisitor::sInited = false;
 StackVisitor::CurrentThread StackVisitor::sCurrentThreadCall = nullptr;
@@ -64,9 +66,22 @@ bool StackVisitor::init() {
     sCreateContextCall = reinterpret_cast<CreateContext>(npth_dlsym(handle, CONTEXT_CREATE));
     sGetMethodCall = reinterpret_cast<GetMethod>(npth_dlsym(handle, STACK_VISITOR_GET_METHOD));
     sWalkStackCall = reinterpret_cast<WalkStack>(npth_dlsym(handle, STACK_VISITOR_WALK_STACK));
+    // 部分Android 12 ART增加模板布尔参数；函数调用参数和返回类型不变。
+    if (sWalkStackCall == nullptr) {
+        sWalkStackCall = reinterpret_cast<WalkStack>(npth_dlsym(handle, STACK_VISITOR_WALK_STACK_ANDROID_12));
+        if (sWalkStackCall != nullptr) {
+            ALOGI("StackVisitor uses Android 12 WalkStack symbol fallback");
+        }
+    }
+
 
     if (sConstructCall != nullptr && sCreateContextCall != nullptr && sGetMethodCall != nullptr && sWalkStackCall != nullptr) {
         sInited = Stack::init(handle);
+    }
+
+    if (!sInited) {
+        ALOGE("StackVisitor initialization failed: ctor=%p context=%p method=%p walk=%p",
+              sConstructCall, sCreateContextCall, sGetMethodCall, sWalkStackCall);
     }
 
     npth_dlclose(handle);

@@ -75,7 +75,7 @@ public final class HttpServer {
     public static class Server extends NanoHTTPD {
 
         private final File hostDir;
-        private boolean dataFlushFinished = false;
+        private volatile boolean dataFlushFinished = false;
         private String error = null;
         private JSONObject traceDebugInfo = null;
 
@@ -187,7 +187,8 @@ public final class HttpServer {
 
         private boolean waitForDataReady() {
             int waitTraceTimeoutSeconds = TraceProperties.getWaitTraceTimeoutSeconds();
-            for (int i = 0; i < waitTraceTimeoutSeconds; i++) {
+            // 保留本轮动态超时；即使配置为0，也先检查一次已完成状态。
+            for (int i = 0; i < Math.max(1, waitTraceTimeoutSeconds); i++) {
                 if (dataFlushFinished) {
                     return true;
                 }

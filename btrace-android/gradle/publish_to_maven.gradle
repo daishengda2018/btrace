@@ -1,0 +1,305 @@
+/**
+ * Maven 发布脚本插件
+ *
+ * 使用方法:
+ * 1. 在项目根目录的 local.properties 文件中配置: nexus.url、nexus.username、nexus.pwd 三个参数, 建议也填写 group 参数.
+ * 2. 在 library 的 build.gradle 中引用此脚本:
+ *    apply from: rootProject.file('gradle/publish_to_maven.gradle')
+ *
+ * 3. 在 library 目录中可选新建 local.properties, 配置如下参数以覆盖全局配置:
+ *    group=com.mrcd         # 构件组 ID
+ *    libName=volley         # 构件名称
+ *    libVersion=1.0.1       # 版本号
+ *    libDesc=description    # 描述
+ *    libWebsite=www.xxx.com # 官网
+ *
+ * 4. 执行发布任务: ./gradlew publishToNexus*/
+
+apply plugin: 'maven-publish'
+apply plugin: 'signing'
+
+// 为 AGP 8.x+ 显式开启 Android Library 的发布组件
+// 必须在 afterEvaluate 之前配置，且必须在 applied android plugin 之后
+if (project.plugins.hasPlugin('com.android.library')) {
+    try {
+        if (android.hasProperty('publishing') && android.publishing.respondsTo('singleVariant', String)) {
+            android.publishing.singleVariant("release")
+        }
+    } catch (Throwable ignored) {}
+}
+
+// ==========================================================================
+// 1. 常量与默认配置
+// ==========================================================================
+final String DEFAULT_LICENCE_NAME = "GNU General Public License, Version 3.0"
+final String DEFAULT_LICENCE_URL = "https://www.gnu.org/licenses/gpl-3.0.txt"
+final String DEFAULT_LICENCE_DIST = "repo"
+final String DEFAULT_WEBSITE = "www.github.com"
+
+// ==========================================================================
+// 2. 工具方法
+// ==========================================================================
+static def isEmpty(String text) {
+    return text == null || text.trim().isEmpty()
+}
+
+static def readProperties(File propFile) {
+    final Properties properties = new Properties()
+    if (propFile?.exists()) {
+        propFile.withInputStream { properties.load(it) }
+    }
+    return properties
+}
+
+static def isSnapshotBuild(String versionName) {
+    return versionName?.contains("SNAPSHOT")
+}
+
+static def requireNotEmpty(String value, String message) {
+    if (isEmpty(value)) {
+        throw new IllegalArgumentException(message)
+    }
+}
+
+static def printPublishConfig(String projectName, String groupId, String artifactId, String version) {
+    println("\n\n=========================================================\n")
+    println("project : " + projectName)
+    println("group : " + groupId)
+    println("name : " + artifactId)
+    println("version : " + version)
+    println("\n=========================================================\n\n")
+}
+
+final Properties rootProperties = readProperties(project.rootProject.file('local.properties'))
+
+// 账户信息, 存在工程根目录的 local.properties 中
+final String nexusUrl = rootProperties.getProperty("nexus.url")
+final String nexusSnapshotUrl = rootProperties.getProperty("nexus.snapshotUrl")
+final String nexusUserName = rootProperties.getProperty("nexus.username")
+final String nexusPassword = rootProperties.getProperty("nexus.pwd")
+String libGroupId = rootProperties.getProperty("group")
+
+// ==========================================================================
+// 3. 配置解析与任务配置 (afterEvaluate 确保插件已加载)
+// ==========================================================================
+afterEvaluate { project ->
+    def plugins = project.plugins
+    def isAndroid = plugins.hasPlugin('com.android.library')
+    def isJava = plugins.hasPlugin('java')
+
+    if (!isAndroid && !isJava) return
+
+    // library 的 local.properties 保存着 lib 下的相关信息
+    final Properties libProps = readProperties(project.file('local.properties'))
+
+    // 构件元数据 (优先使用 lib 下的非空配置，其次是根目录配置，最后是项目默认值)
+    final String rootGroup = rootProperties.getProperty("group", project.hasProperty("POM_GROUP_ID") ? project.POM_GROUP_ID : project.group.toString())
+    final String libGroup = libProps.getProperty("group", rootGroup)
+    if (!isEmpty(libGroup)) {
+        libGroupId = libGroup
+    }
+    final String libName = libProps.getProperty("libName", project.name)
+    final String rootVersion = rootProperties.getProperty("libVersion", project.hasProperty("POM_VERSION_NAME") ? project.POM_VERSION_NAME : project.version.toString())
+    final String defVersion = (isAndroid && android.defaultConfig.versionName != null) ? android.defaultConfig.versionName : rootVersion
+    final String libVersion = libProps.getProperty("libVersion", defVersion)
+    final String libDesc = libProps.getProperty("libDesc", "no description for this library")
+    final String libWebsite = libProps.getProperty("libWebsite", DEFAULT_WEBSITE)
+    final String repoUrl = isSnapshotBuild(libVersion) ? nexusSnapshotUrl : nexusUrl
+
+    requireNotEmpty(libGroupId, "Attention! Library 'group' is not set! Check local.properties.")
+
+    // 协议配置
+    final String libLicence = libProps.getProperty("libLicence", DEFAULT_LICENCE_NAME)
+    final String libLicenceUrl = libProps.getProperty("libLicenceUrl", DEFAULT_LICENCE_URL)
+    final String libLicenceDist = libProps.getProperty("libLicenceDist", DEFAULT_LICENCE_DIST)
+
+    // ==========================================================================
+    // 4. Javadoc 与 Sources 任务注册
+    // ==========================================================================
+    if (isAndroid) {
+        tasks.register('androidJavadocs', Javadoc) {
+            source = android.sourceSets.main.java.srcDirs
+            exclude "**/internal/**"
+            classpath += project.files(android.getBootClasspath().join(File.pathSeparator))
+
+            // 动态配置编译后的 classpath (兼容新旧 AGP 版本)
+            def variants = plugins.hasPlugin('com.android.library') ? android.libraryVariants : android.applicationVariants
+            def releaseVariant = variants.find { it.name.endsWith("release") }
+
+            if (releaseVariant != null) {
+                def hasJavaCompileProvider = releaseVariant.hasProperty('javaCompileProvider')
+                def hasJavaCompiler = releaseVariant.hasProperty('javaCompiler')
+                def javaCompile = hasJavaCompileProvider ? releaseVariant.javaCompileProvider.get() : null
+                javaCompile = javaCompile ?: (hasJavaCompiler ? releaseVariant.javaCompiler : releaseVariant.javaCompile)
+
+                classpath += javaCompile.classpath
+                classpath += javaCompile.outputs.files
+            }
+
+            options {
+                encoding "UTF-8"
+                charSet 'UTF-8'
+                if (JavaVersion.current().isJava8Compatible()) {
+                    addStringOption('Xdoclint:none', '-quiet')
+                }
+            }
+            failOnError false
+        }
+
+        tasks.register('androidJavadocsJar', Jar) {
+            archiveClassifier.set('javadoc')
+            from androidJavadocs.destinationDir
+            dependsOn androidJavadocs
+        }
+
+        tasks.register('androidSourcesJar', Jar) {
+            archiveClassifier.set('sources')
+            from android.sourceSets.main.java.srcDirs
+        }
+    } else {
+        tasks.register('sourcesJar', Jar) {
+            archiveClassifier.set('sources')
+            from sourceSets.main.allSource
+            dependsOn classes
+        }
+
+        tasks.register('javadocsJar', Jar) {
+            archiveClassifier.set('javadoc')
+            from javadoc.destinationDir
+            dependsOn javadoc
+        }
+    }
+
+    // ==========================================================================
+    // 5. Maven Publication 配置
+    // ==========================================================================
+    publishing {
+        publications {
+            maven(MavenPublication) {
+                groupId = libGroupId
+                artifactId = libName
+                version = libVersion
+
+                if (isAndroid) {
+                    def releaseComponent = components.findByName("release")
+                    if (releaseComponent) from releaseComponent
+                    artifact androidSourcesJar
+                    artifact androidJavadocsJar
+                } else {
+                    def javaComponent = components.findByName("java")
+                    if (javaComponent) from javaComponent
+                    artifact sourcesJar
+                    artifact javadocsJar
+                }
+
+                pom {
+                    name = libName
+                    description = libDesc
+                    url = libWebsite
+                    licenses {
+                        license {
+                            name = libLicence
+                            url = libLicenceUrl
+                            distribution = libLicenceDist
+                        }
+                    }
+                    developers {
+                        developer {
+                            id = nexusUserName
+                            name = nexusUserName
+                        }
+                    }
+                    scm {
+                        connection = libWebsite
+                        developerConnection = libWebsite
+                        url = libWebsite
+                    }
+                }
+            }
+        }
+
+        repositories {
+            maven {
+                name = "maven"
+                url = repoUrl
+                allowInsecureProtocol = true
+                credentials {
+                    username = nexusUserName
+                    password = nexusPassword
+                }
+            }
+        }
+    }
+
+    // ==========================================================================
+    // 6. 任务生命周期与签名配置
+    // ==========================================================================
+    tasks.named('publishMavenPublicationToMavenRepository') {
+        doFirst {
+            requireNotEmpty(repoUrl, "Attention! Nexus URL is not set!")
+            requireNotEmpty(nexusUserName, "Attention! Nexus username is not set!")
+            requireNotEmpty(nexusPassword, "Attention! Nexus password is not set!")
+            printPublishConfig(project.getName(), libGroupId, libName, libVersion)
+        }
+    }
+
+    signing {
+        required { !isSnapshotBuild(libVersion) && gradle.taskGraph.hasTask("publishToNexus") }
+        sign publishing.publications.maven
+    }
+
+    tasks.register('publishToNexus') {
+        dependsOn 'publishMavenPublicationToMavenRepository'
+        doLast {
+            println "\n================ PUBLISH SUCCESS ================"
+            println "Use it in your project : \n\n"
+            println "implementation '$libGroupId:$libName:$libVersion'"
+            println "=================================================\n"
+        }
+    }
+
+    // ==========================================================================
+    // 7. 辅助任务 (清理、打包与打开目录)
+    // ==========================================================================
+    tasks.register('clearJar', Delete) {
+        delete "build/libs/${libName}_*.jar"
+    }
+
+    tasks.register('openDir', Exec) {
+        if (System.getProperty("os.name").toLowerCase().contains("mac")) {
+            commandLine "open", "${project.buildDir}/libs/"
+        } else {
+            commandLine "echo", "Output Directory: ${project.buildDir}/libs/"
+        }
+    }
+
+    tasks.register('makeJar', Copy) {
+        dependsOn clearJar, (isAndroid ? 'assembleRelease' : 'jar')
+
+        if (isAndroid) {
+            // 自动适配 Android Library 在不同 AGP 版本下的编译输出路径
+            from {
+                def candidates = [project.file('build/intermediates/aar_main_jar/release/syncReleaseLibJars'),
+                                  project.file('build/intermediates/aar_main_jar/release'),
+                                  project.file('build/intermediates/bundles/release')]
+                candidates.find { new File(it, 'classes.jar').exists() } ?: candidates[0]
+            }
+            include('classes.jar')
+            rename('classes.jar', "${libName}_${libVersion}.jar")
+        } else {
+            from(tasks.named('jar'))
+            rename { "${libName}_${libVersion}.jar" }
+        }
+        into('build/libs/')
+
+        doLast {
+            println "\n=====> JAR Path: ${destinationDir}${File.separator}${libName}_${libVersion}.jar"
+        }
+        finalizedBy openDir
+    }
+
+    // 修复 Gradle 7+ 依赖检查问题
+    tasks.withType(GenerateModuleMetadata).configureEach {
+        dependsOn(tasks.withType(Jar))
+    }
+}

@@ -35,11 +35,10 @@ allprojects {
 
 ext {
     versions = [
-            'compileSdk': 30,
-            'buildTools': '30.0.2',
             'minSdk'    : 21,
-            'targetSdk' : 30,
-            'ndkVersion': '21.1.6352462'
+            'compileSdk': 35,
+            'targetSdk' : 35,
+            'ndkVersion': '23.1.7779620'
     ]
 }
 

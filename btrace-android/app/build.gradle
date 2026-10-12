@@ -3,7 +3,8 @@ apply plugin: 'kotlin-android'
 android {
 
     compileSdkVersion versions.compileSdk
-    buildToolsVersion versions.buildTools
+
+    namespace "rhea.sample.android"
 
     defaultConfig {
         applicationId "rhea.sample.android"

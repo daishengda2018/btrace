@@ -6,7 +6,7 @@ group POM_GROUP_ID
 android {
 	ndkVersion versions.ndkVersion
 	compileSdkVersion versions.compileSdk
-	buildToolsVersion versions.buildTools
+	namespace "com.bytedance.rheatrace.trace"
 
 	defaultConfig {
 		minSdkVersion versions.minSdk
@@ -37,6 +37,7 @@ android {
 	externalNativeBuild {
 		cmake {
 			path "src/main/cpp/CMakeLists.txt"
+			version "3.22.1"
 		}
 	}
 
@@ -56,5 +57,4 @@ dependencies {
 	implementation 'org.nanohttpd:nanohttpd:2.2.0'
 }
 
-apply from: rootProject.file('gradle/android-artifacts.gradle')
-apply from: rootProject.file('gradle/gradle-maven-upload.gradle')
+apply from: rootProject.file('gradle/publish_to_maven.gradle')

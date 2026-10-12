@@ -30,5 +30,4 @@ jar {
     }
 }
 
-apply from: rootProject.file('gradle/java-artifacts.gradle')
-apply from: rootProject.file('gradle/gradle-maven-upload.gradle')
+apply from: rootProject.file('gradle/publish_to_maven.gradle')
